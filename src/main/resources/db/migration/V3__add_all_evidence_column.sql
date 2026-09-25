@@ -1,5 +1,5 @@
 -- =============================================================================
--- V2: Add all_evidence column to diagnostics table
+-- V3: Add all_evidence column to diagnostics table
 -- =============================================================================
 -- Purpose: Store complete EvidenceItem instances (11-field model) from validation pipeline
 -- for debugging and audit. The top 3-5 are transformed to Evidence (5-field model) for API.
