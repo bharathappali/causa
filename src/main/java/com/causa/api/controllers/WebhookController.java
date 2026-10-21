@@ -83,12 +83,20 @@ public class WebhookController {
 
         // Trigger diagnostics for accepted alerts
         Map<String, String> acceptedEntries = new LinkedHashMap<>();
+        Map<String, List<WebhookResponse.DiagnosticRef>> diagnosticsByAlert = new LinkedHashMap<>();
         for (Alert alert : accepted) {
-            Diagnostic diagnostic = diagnosticService.triggerDiagnostics(alert);
-            acceptedEntries.put(alert.getAlertId(), diagnostic.getDiagnosticId());
+            List<Diagnostic> diagnostics = diagnosticService.triggerDiagnosticsForProfiles(alert);
+            Diagnostic chosen = diagnostics.stream()
+                    .filter(d -> "default".equals(d.getProfileId()))
+                    .findFirst()
+                    .orElse(diagnostics.get(0));
+            acceptedEntries.put(alert.getAlertId(), chosen.getDiagnosticId());
+            diagnosticsByAlert.put(alert.getAlertId(), diagnostics.stream()
+                    .map(d -> new WebhookResponse.DiagnosticRef(d.getDiagnosticId(), d.getProfileId()))
+                    .toList());
         }
 
-        WebhookResponse body = WebhookResponse.of(acceptedEntries, rejectedReasons);
+        WebhookResponse body = WebhookResponse.of(acceptedEntries, rejectedReasons, diagnosticsByAlert);
 
         log.info(LogMessages.Alert.WEBHOOK_PROCESSED)
             .field("totalReceived", body.totalReceived())

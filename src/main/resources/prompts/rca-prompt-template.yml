@@ -49,7 +49,7 @@ prompts:
       Two sections from the Cryostat MCP server:
       - **5a. CRYOSTAT_DISCOVERY**: pruned identity for this pod only — namespace, deployment, replicaSet, pod, jvmId, alias, javaMain. If the text says the pod was not found in the discovery tree, Cryostat has not registered this workload and there is no analysis report.
       - **5b. CRYOSTAT_ANALYSIS**: automated rules that scored above 0, sorted with the highest score first. Use score, topic, summary, explanation, and solution as the evidence. Do not treat a missing section as healthy. Score -1 rules are already omitted (the recording did not enable that event). Score 0 rules are already omitted (no problem found).
-      - **Note**: If CRYOSTAT_DISCOVERY or CRYOSTAT_ANALYSIS is missing or "No Data Available", say so in llm_notes. A discovery match with no analysis means the report call failed, often because no archived recording covered the alert window.
+      - **Note**: If the profile note says Cryostat is intentionally excluded, do not report CRYOSTAT_DISCOVERY or CRYOSTAT_ANALYSIS as missing. If they are in scope and missing or "No Data Available", say so in llm_notes. A discovery match with no analysis means the report call failed, often because no archived recording covered the alert window.
 
       ### 6. KRUIZE_PERFORMANCE_RECOMMENDATIONS
       - Contains: Resource request/limit recommendations for CPU and memory
@@ -85,6 +85,10 @@ prompts:
         - Flame graph frame dominating ≥ 30 % of samples — CPU hotspot; distinguish app code from JVM GC/lock internals
         - RECORDING REPORT `MemoryLeakRule` or `ObjectCountAfterGCRule` violations — high-confidence leak evidence
       - **Note**: If sections 8d–8g are absent, `latestRecordingId` was null (no JFR recording yet) — state in `llm_notes`. If all sections are `"No Data Available"`, Async Profiler MCP was not configured — omit from `evidences`.
+
+      ## PROFILE SCOPE
+
+      {{profile_note}}
 
       ## AVAILABLE CONTEXT DATA
 
@@ -176,14 +180,14 @@ prompts:
           "rca_confidence_score": "<0.0-1.0>",
           "summary_text": "<2-4 sentences: justify score, which signals were strong/missing, evidence chain completeness.>"
         },
-        "llm_notes": "<3-7 sentences: signals available, step-by-step analysis, corroboration, key decisions, ambiguities, whether CRYOSTAT_DISCOVERY and CRYOSTAT_ANALYSIS were present, confidence reasoning, alternative theories ruled out.>"
+        "llm_notes": "<3-7 sentences: signals available, step-by-step analysis, corroboration, key decisions, ambiguities, whether in-scope CRYOSTAT_DISCOVERY and CRYOSTAT_ANALYSIS were present, confidence reasoning, alternative theories ruled out. Do not call intentionally excluded sources missing.>"
       }
 
       ## CONSTRAINTS
 
       1. Return ONLY valid JSON — no markdown, no code blocks.
       2. All evidences and supporting_logs MUST come directly from provided signals. Quote logs verbatim. Do NOT invent or infer evidence.
-      3. Work with whatever signals are provided. Note missing signals in llm_notes, lower confidence accordingly.
+      3. Work with whatever signals are provided. Note missing in-scope signals in llm_notes, lower confidence accordingly. Do not report a source as missing when the profile note says it was intentionally excluded.
       4. EXACTLY 3 recommendations, EXACTLY 1 anomaly_type. Never fewer.
       5. Implementation notes must include actual commands, file paths, and placeholders.
 

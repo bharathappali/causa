@@ -53,10 +53,10 @@ public final class CryostatContextCollector {
 
         Match match = findMatch(discoveryRaw, namespace, podName);
         if (match == null) {
-            builder.put(discoveryKey, notFoundNote(namespace, podName));
+            builder.put(client.getServerName(), discoveryKey, notFoundNote(namespace, podName));
             return;
         }
-        builder.put(discoveryKey, match.toJson());
+        builder.put(client.getServerName(), discoveryKey, match.toJson());
 
         McpSettings.ToolConfig reportTool = findTool(client, McpConstants.Tools.CRYOSTAT_GET_ANALYSIS_REPORT);
         if (reportTool == null) {
@@ -73,10 +73,10 @@ public final class CryostatContextCollector {
         String reportRaw = client.callTool(reportTool.name(), reportArgs);
         String analysisKey = contextKey(reportTool, ANALYSIS_CONTEXT_KEY);
         if (reportRaw == null || reportRaw.isBlank()) {
-            builder.put(analysisKey, ContextConstants.NOT_AVAILABLE);
+            builder.put(client.getServerName(), analysisKey, ContextConstants.NOT_AVAILABLE);
             return;
         }
-        builder.put(analysisKey, compactReport(reportRaw));
+        builder.put(client.getServerName(), analysisKey, compactReport(reportRaw));
     }
 
     static Match findMatch(String discoveryJson, String namespace, String podName) {

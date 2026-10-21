@@ -5,6 +5,7 @@ import com.causa.common.constants.AppConstants;
 import com.causa.core.domain.Alert;
 import com.causa.core.domain.DiagnosticContext;
 import com.causa.mcp.config.McpSettings;
+import com.causa.mcp.config.RcaProfile;
 import com.causa.mcp.util.AsyncProfilerContextCollector;
 import com.causa.mcp.util.CryostatContextCollector;
 import com.causa.mcp.util.LibertyLogsContextCollector;
@@ -18,6 +19,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -33,7 +35,11 @@ public class McpRegistry {
 
     private static final CausaLogger log = CausaLogger.getLogger(McpRegistry.class);
 
+    private static final RcaProfile IMPLICIT_DEFAULT = new RcaProfile(
+            "default", "diag", null, List.of("*"), List.of(), List.of(), false);
+
     private final Map<String, McpClient> clients = new ConcurrentHashMap<>();
+    private volatile List<RcaProfile> configuredProfiles = List.of();
     private volatile boolean initialized = false;
     private volatile String initializationError;
 
@@ -47,14 +53,23 @@ public class McpRegistry {
     public void init(McpSettings settings) {
         clients.clear();
         settings.mcpServers().forEach((name, config) -> clients.put(name, new McpClient(name, config)));
+        configuredProfiles = List.copyOf(settings.rcaProfiles());
         initializationError = null;
         initialized = true;
     }
 
     public void markInitFailed(String reason) {
         clients.clear();
+        configuredProfiles = List.of();
         initializationError = reason;
         initialized = false;
+    }
+
+    /**
+     * Profiles from {@code mcp.json}, or one implicit {@code default} profile when none are configured.
+     */
+    public List<RcaProfile> profiles() {
+        return configuredProfiles.isEmpty() ? List.of(IMPLICIT_DEFAULT) : configuredProfiles;
     }
 
     public Optional<McpClient> getClient(String name) {
@@ -79,6 +94,13 @@ public class McpRegistry {
      * sequential.
      */
     public DiagnosticContext collectContext(Alert alert) {
+        return collectContext(alert, Set.copyOf(clients.keySet()));
+    }
+
+    /**
+     * Collects diagnostic context from the named servers only. Other configured servers are not called.
+     */
+    public DiagnosticContext collectContext(Alert alert, Set<String> servers) {
         Alert.WorkloadInfo workload = alert.getWorkloadInfo();
         DiagnosticContext.Builder builder = DiagnosticContext.builder()
                 .podName(workload.podName())
@@ -86,8 +108,12 @@ public class McpRegistry {
                 .namespace(workload.namespace())
                 .workloadName(workload.containerName());
 
+        Set<String> selected = servers != null ? servers : Set.of();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             for (McpClient client : allClients()) {
+                if (!selected.contains(client.getServerName())) {
+                    continue;
+                }
                 executor.submit(() -> collectFromServer(client, alert, builder));
             }
         }
@@ -101,7 +127,7 @@ public class McpRegistry {
             return;
         }
         switch (client.getServerName()) {
-            case "filesystem" -> builder.put("LIBERTY_LOGS",
+            case "filesystem" -> builder.put(client.getServerName(), "LIBERTY_LOGS",
                     libertyLogsContextCollector.collectLibertyLogs(alert.getAlertId(), alert.getAlertTimestamp()));
             case "async-profiler" -> AsyncProfilerContextCollector.collect(client, alert, builder);
             case "cryostat" -> CryostatContextCollector.collect(client, alert, builder);
@@ -165,7 +191,7 @@ public class McpRegistry {
             Map<String, String> args = resolveArguments(tool.arguments(), alert, client.getConfig(), extraTokens);
             String raw = client.callTool(tool.name(), args);
             String formatted = McpResponseFormatter.format(client.getServerName(), tool.name(), raw);
-            builder.put(tool.contextKey(), formatted);
+            builder.put(client.getServerName(), tool.contextKey(), formatted);
         } catch (Exception e) {
             // one bad tool must not affect the rest of this server's (or any other server's) collection
             log.warn("MCP tool processing failed")

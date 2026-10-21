@@ -25,4 +25,11 @@ public interface RcaConfig {
     @WithName("template-path")
     @WithDefault("/prompts/rca-prompt-template.yml")
     String templatePath();
+
+    /**
+     * How many profile RCA runs may call the LLM at once for a single alert.
+     */
+    @WithName("max-parallel-profiles")
+    @WithDefault("2")
+    int maxParallelProfiles();
 }

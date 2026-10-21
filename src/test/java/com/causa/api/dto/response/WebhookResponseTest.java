@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -80,6 +81,22 @@ class WebhookResponseTest {
 
             assertNotNull(response.accepted());
             assertEquals("diag-1", response.accepted().get("alert-1"));
+            assertTrue(response.diagnostics().isEmpty());
+        }
+
+        @Test
+        @DisplayName("Should include every diagnostic id and profile")
+        void shouldIncludeDiagnosticsByAlert() {
+            Map<String, List<WebhookResponse.DiagnosticRef>> diagnostics = Map.of(
+                    "alert-1", List.of(
+                            new WebhookResponse.DiagnosticRef("cryo_diag_abcdefghijklmnop", "cryo"),
+                            new WebhookResponse.DiagnosticRef("diag_abcdefghijklmnop", "default")));
+            WebhookResponse response = WebhookResponse.of(
+                    Map.of("alert-1", "diag_abcdefghijklmnop"), Map.of(), diagnostics);
+
+            assertEquals(2, response.diagnostics().get("alert-1").size());
+            assertEquals("cryo", response.diagnostics().get("alert-1").get(0).profileId());
+            assertEquals("diag_abcdefghijklmnop", response.accepted().get("alert-1"));
         }
 
         @Test

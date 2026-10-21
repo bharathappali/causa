@@ -40,6 +40,24 @@ class IdUtilsTest {
     }
 
     @Nested
+    @DisplayName("diagnostic suffix and prefix Tests")
+    class DiagnosticSuffixTests {
+        @Test void suffixIs16Alphanumeric() {
+            assertThat(IdUtils.newDiagnosticSuffix()).matches("[a-zA-Z0-9]{16}");
+        }
+
+        @Test void diagnosticIdJoinsPrefixAndSuffix() {
+            assertThat(IdUtils.diagnosticId("cryo_diag", "abcdefghijklmnop"))
+                .isEqualTo("cryo_diag_abcdefghijklmnop");
+        }
+
+        @Test void generateDiagnosticIdUsesDiagPrefix() {
+            String suffix = "abcdefghijklmnop";
+            assertThat(IdUtils.diagnosticId("diag", suffix)).isEqualTo("diag_" + suffix).hasSize(21);
+        }
+    }
+
+    @Nested
     @DisplayName("generateConfigurationId() Tests")
     class ConfigurationIdTests {
         @Test void hasCorrectPrefix() { assertThat(IdUtils.generateConfigurationId()).startsWith("cnfg_"); }

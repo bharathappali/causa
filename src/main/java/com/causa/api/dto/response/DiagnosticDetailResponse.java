@@ -24,6 +24,12 @@ public record DiagnosticDetailResponse(
     @JsonProperty("status")
     String status,
 
+    @JsonProperty("profile_id")
+    String profileId,
+
+    @JsonProperty("run_group_id")
+    String runGroupId,
+
     @JsonProperty("alert_id")
     String alertId,
 
@@ -43,7 +49,10 @@ public record DiagnosticDetailResponse(
     DiagnosisInfo diagnosis,
 
     @JsonProperty("validation_result")
-    String validationResult
+    String validationResult,
+
+    @JsonProperty("remarks")
+    String remarks
 
 ) {
 
@@ -164,13 +173,16 @@ public record DiagnosticDetailResponse(
         return new DiagnosticDetailResponse(
             diagnostic.getDiagnosticId(),
             diagnostic.getStatus() != null ? diagnostic.getStatus().getValue() : null,
+            diagnostic.getProfileId(),
+            diagnostic.getRunGroupId(),
             diagnostic.getAlertId(),
             alert != null ? alert.getAlertName()                                          : null,
             alert != null && alert.getSeverity() != null ? alert.getSeverity().getValue() : null,
             alert != null ? alert.getAlertTimestamp()                                     : null,
             workloadInfo,
             diagnosisInfo,
-            diagnostic.getValidationResult()
+            diagnostic.getValidationResult(),
+            diagnostic.getRemarks()
         );
     }
 }

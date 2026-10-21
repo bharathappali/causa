@@ -13,6 +13,7 @@ import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -69,21 +70,31 @@ public class DiagnosticRepositoryImpl implements DiagnosticRepository {
     public PageResult<Diagnostic> search(Diagnostic.Filter filter, PageRequest pageRequest) {
         boolean hasWorkload   = filter != null && !isBlank(filter.workload());
         boolean hasNamespace  = filter != null && !isBlank(filter.namespace());
+        boolean hasProfile    = filter != null && !isBlank(filter.profile());
 
         Sort sort = Sort.by("createdAt").descending();
         Page page = Page.of(pageRequest.panachePage(), pageRequest.size());
 
-        io.quarkus.hibernate.orm.panache.PanacheQuery<DiagnosticEntity> query;
+        List<String> clauses = new ArrayList<>();
+        List<Object> params = new ArrayList<>();
+        if (hasWorkload) {
+            clauses.add("alert.workloadName = ?" + (params.size() + 1));
+            params.add(filter.workload());
+        }
+        if (hasNamespace) {
+            clauses.add("alert.namespace = ?" + (params.size() + 1));
+            params.add(filter.namespace());
+        }
+        if (hasProfile) {
+            clauses.add("profileId = ?" + (params.size() + 1));
+            params.add(filter.profile());
+        }
 
-        if (hasWorkload && hasNamespace) {
-            query = DiagnosticEntity.find("alert.workloadName = ?1 and alert.namespace = ?2",
-                sort, filter.workload(), filter.namespace());
-        } else if (hasWorkload) {
-            query = DiagnosticEntity.find("alert.workloadName = ?1", sort, filter.workload());
-        } else if (hasNamespace) {
-            query = DiagnosticEntity.find("alert.namespace = ?1", sort, filter.namespace());
-        } else {
+        io.quarkus.hibernate.orm.panache.PanacheQuery<DiagnosticEntity> query;
+        if (clauses.isEmpty()) {
             query = DiagnosticEntity.findAll(sort);
+        } else {
+            query = DiagnosticEntity.find(String.join(" and ", clauses), sort, params.toArray());
         }
 
         List<Diagnostic> items = query.page(page).list()

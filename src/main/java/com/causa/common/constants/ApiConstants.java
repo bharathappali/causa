@@ -101,6 +101,7 @@ public final class ApiConstants {
             public static final String BY_ID      = "/{" + PATH_PARAM + "}";
             public static final String QUERY_NAMESPACE = "namespace";
             public static final String QUERY_WORKLOAD  = "workload_name";
+            public static final String QUERY_PROFILE   = "profile";
         }
 
         /**

@@ -63,6 +63,12 @@ Generate Root Cause Analysis (RCA) for Kubernetes pod issues using LLM-based ana
 
 ## Data Flow
 
+### RCA profiles
+
+One accepted alert creates one PENDING diagnostic per RCA profile in `mcp.json` (`rcaProfiles`). The profiles share a 16-character suffix, so the cluster config produces `cryo_diag_<suffix>` and `diag_<suffix>` with the same suffix and `run_group_id`. MCP collection runs once for the union of every profile's servers. Each profile then keeps only its own servers, builds its own prompt (with a `{{profile_note}}` that names excluded sources), and validates against that filtered text. A profile whose `skipIfRequiredMissing` is true and whose required server returned nothing is stored as `SKIPPED` and does not call the LLM. One profile failing does not fail the others. The alert becomes `PROCESSED` only after every profile finishes.
+
+With no `rcaProfiles`, the implicit `default` profile includes every server and the id stays `diag_<suffix>`. Parallel LLM calls for one alert are capped by `causa.rca.max-parallel-profiles` (default 2).
+
 ### High-Level Flow
 
 ```
@@ -127,8 +133,8 @@ causa:
     max-tokens: 4096
   # RCA Template Configuration
   rca:
-    template:
-      path: "/prompts/rca-prompt-template.yml"  # default
+    template-path: "/prompts/rca-prompt-template.yml"  # default
+    max-parallel-profiles: 2                            # LLM calls in flight per alert
 
   # Vertex AI Configuration (if provider = vertex-ai-anthropic)
   vertex:

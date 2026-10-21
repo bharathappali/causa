@@ -5,6 +5,7 @@ import com.causa.core.domain.Diagnostic;
 import com.causa.core.domain.PageRequest;
 import com.causa.core.domain.PageResult;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -20,9 +21,19 @@ public interface DiagnosticService {
      * is never blocked.
      *
      * @param alert the accepted alert to analyse
-     * @return the PENDING diagnostic (id + alertId + status only)
+     * @return the PENDING diagnostic for the {@code default} profile, or the first profile when
+     *         none is named {@code default}
      */
     Diagnostic triggerDiagnostics(Alert alert);
+
+    /**
+     * Persists one PENDING diagnostic per RCA profile and dispatches a single background pipeline.
+     * Profiles share one MCP collection and one id suffix.
+     *
+     * @param alert the accepted alert to analyse
+     * @return the PENDING diagnostics, one per profile, in profile order
+     */
+    List<Diagnostic> triggerDiagnosticsForProfiles(Alert alert);
 
     /**
      * Returns a paginated list of diagnostics ordered by creation time descending,

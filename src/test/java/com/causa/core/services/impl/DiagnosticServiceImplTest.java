@@ -3,27 +3,37 @@ package com.causa.core.services.impl;
 import com.causa.common.constants.AlertConstants.AlertSeverity;
 import com.causa.common.constants.AlertConstants.AlertStatus;
 import com.causa.common.constants.DiagnosticConstants.DiagnosticStatus;
+import com.causa.config.RcaConfig;
 import com.causa.core.domain.Alert;
 import com.causa.core.domain.Diagnostic;
+import com.causa.core.domain.DiagnosticContext;
 import com.causa.core.domain.PageRequest;
 import com.causa.core.domain.PageResult;
 import com.causa.core.ports.AlertRepository;
 import com.causa.core.ports.DiagnosticRepository;
 import com.causa.core.services.RcaPromptBuilder;
+import com.causa.mcp.McpClient;
+import com.causa.mcp.config.McpSettings;
+import com.causa.mcp.config.RcaProfile;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
@@ -68,6 +78,9 @@ class DiagnosticServiceImplTest {
     private jakarta.validation.Validator validator;
 
     @Mock
+    private RcaConfig rcaConfig;
+
+    @Mock
     private jakarta.enterprise.inject.Instance<com.causa.core.services.validation.RcaValidator> rcaValidatorInstance;
 
     private DiagnosticServiceImpl diagnosticService;
@@ -84,8 +97,11 @@ class DiagnosticServiceImplTest {
                 llmConfigCache,
                 objectMapper,
                 validator,
+                rcaConfig,
                 rcaValidatorInstance
         );
+        lenient().when(rcaConfig.maxParallelProfiles()).thenReturn(2);
+        lenient().when(diagnosticRepository.update(any(Diagnostic.class))).thenAnswer(inv -> inv.getArgument(0));
     }
 
     private static Alert buildAlert(String id) {
@@ -261,6 +277,124 @@ class DiagnosticServiceImplTest {
             Optional<Diagnostic> result = diagnosticService.getDiagnosticById("missing");
 
             assertTrue(result.isEmpty());
+        }
+    }
+
+    @Nested
+    @DisplayName("multi-profile pipeline")
+    class MultiProfileTests {
+
+        @Test
+        @DisplayName("one alert creates two diagnostics that share a suffix and collects MCP once")
+        void twoProfilesShareSuffixAndCollectOnce() {
+            Alert alert = buildAlert("alert-1");
+            RcaProfile cryo = new RcaProfile("cryo", "cryo_diag", null, List.of("*"), List.of(), List.of(), false);
+            RcaProfile baseline = new RcaProfile("default", "diag", null, List.of("*"), List.of("cryostat"), List.of(), false);
+            when(mcpRegistry.profiles()).thenReturn(List.of(cryo, baseline));
+            when(mcpRegistry.allClients()).thenReturn(List.of(client("kubernetes"), client("kruize"), client("cryostat")));
+            when(mcpRegistry.collectContext(eq(alert), any())).thenReturn(contextWithCryostat());
+            when(rcaPromptBuilder.getSystemPrompt()).thenReturn("system");
+            when(rcaPromptBuilder.buildPrompt(eq(alert), any(), any())).thenReturn("prompt");
+            when(promptSender.send(any())).thenThrow(new RuntimeException("stop after prompt"));
+            when(diagnosticRepository.save(any(Diagnostic.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            List<Diagnostic> created = diagnosticService.triggerDiagnosticsForProfiles(alert);
+
+            assertEquals(2, created.size());
+            assertEquals(created.get(0).getRunGroupId(), created.get(1).getRunGroupId());
+            assertTrue(created.stream().anyMatch(d -> d.getDiagnosticId().equals("cryo_diag_" + d.getRunGroupId())
+                    && "cryo".equals(d.getProfileId())));
+            assertTrue(created.stream().anyMatch(d -> d.getDiagnosticId().equals("diag_" + d.getRunGroupId())
+                    && "default".equals(d.getProfileId())));
+
+            ArgumentCaptor<String> contexts = ArgumentCaptor.forClass(String.class);
+            verify(rcaPromptBuilder, timeout(5000).times(2)).buildPrompt(eq(alert), contexts.capture(), any());
+            verify(mcpRegistry, timeout(5000).times(1)).collectContext(eq(alert), eq(Set.of("kubernetes", "kruize", "cryostat")));
+            assertTrue(contexts.getAllValues().stream().anyMatch(text -> text.contains("CRYOSTAT_ANALYSIS")));
+            assertTrue(contexts.getAllValues().stream().anyMatch(text -> !text.contains("CRYOSTAT_")));
+            verify(alertRepository, timeout(5000).times(1))
+                    .updateProcessingStatus(eq("alert-1"), anyString());
+        }
+
+        @Test
+        @DisplayName("skipIfRequiredMissing does not call the LLM")
+        void skipsWhenRequiredServerHasNoData() {
+            Alert alert = buildAlert("alert-1");
+            RcaProfile cryo = new RcaProfile(
+                    "cryo", "cryo_diag", null, List.of("*"), List.of(), List.of("cryostat"), true);
+            when(mcpRegistry.profiles()).thenReturn(List.of(cryo));
+            when(mcpRegistry.allClients()).thenReturn(List.of(client("kubernetes")));
+            when(mcpRegistry.collectContext(eq(alert), any())).thenReturn(DiagnosticContext.builder()
+                    .put("kubernetes", "POD_STATUS", "Running")
+                    .build());
+            when(diagnosticRepository.save(any(Diagnostic.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            diagnosticService.triggerDiagnosticsForProfiles(alert);
+
+            ArgumentCaptor<Diagnostic> updates = ArgumentCaptor.forClass(Diagnostic.class);
+            verify(diagnosticRepository, timeout(5000).atLeastOnce()).update(updates.capture());
+            verify(alertRepository, timeout(5000)).updateProcessingStatus(eq("alert-1"), anyString());
+            assertTrue(updates.getAllValues().stream().anyMatch(d ->
+                    d.getStatus() == DiagnosticStatus.SKIPPED
+                            && d.getRemarks() != null
+                            && d.getRemarks().contains("cryostat")));
+            verify(rcaPromptBuilder, never()).buildPrompt(any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("one profile failing still runs the other")
+        void oneProfileFailureDoesNotStopTheOther() {
+            Alert alert = buildAlert("alert-1");
+            RcaProfile cryo = new RcaProfile("cryo", "cryo_diag", null, List.of("*"), List.of(), List.of(), false);
+            RcaProfile baseline = new RcaProfile("default", "diag", null, List.of("*"), List.of("cryostat"), List.of(), false);
+            when(mcpRegistry.profiles()).thenReturn(List.of(cryo, baseline));
+            when(mcpRegistry.allClients()).thenReturn(List.of(client("kubernetes"), client("cryostat")));
+            when(mcpRegistry.collectContext(eq(alert), any())).thenReturn(contextWithCryostat());
+            when(rcaPromptBuilder.getSystemPrompt()).thenReturn("system");
+            when(rcaPromptBuilder.buildPrompt(eq(alert), any(), any())).thenAnswer(inv -> {
+                String text = inv.getArgument(1);
+                if (text.contains("CRYOSTAT_ANALYSIS")) {
+                    throw new RuntimeException("cryo failed");
+                }
+                return "prompt";
+            });
+            when(promptSender.send(any())).thenThrow(new RuntimeException("baseline llm failed"));
+            when(diagnosticRepository.save(any(Diagnostic.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            diagnosticService.triggerDiagnosticsForProfiles(alert);
+
+            verify(rcaPromptBuilder, timeout(5000).times(2)).buildPrompt(eq(alert), any(), any());
+            ArgumentCaptor<Diagnostic> updates = ArgumentCaptor.forClass(Diagnostic.class);
+            verify(diagnosticRepository, timeout(5000).atLeast(2)).update(updates.capture());
+            assertEquals(2, updates.getAllValues().stream()
+                    .filter(d -> d.getStatus() == DiagnosticStatus.FAILED)
+                    .map(Diagnostic::getProfileId)
+                    .distinct()
+                    .count());
+            verify(alertRepository, timeout(5000).times(1)).updateProcessingStatus(eq("alert-1"), anyString());
+        }
+
+        private static DiagnosticContext contextWithCryostat() {
+            return DiagnosticContext.builder()
+                    .podName("pod-1")
+                    .put("kubernetes", "POD_STATUS", "Running")
+                    .put("kruize", "KRUIZE_PERFORMANCE_RECOMMENDATIONS", "tune")
+                    .put("cryostat", "CRYOSTAT_DISCOVERY", "pod found")
+                    .put("cryostat", "CRYOSTAT_ANALYSIS", "hot allocation")
+                    .build();
+        }
+
+        private static McpClient client(String name) {
+            return new McpClient(name, new McpSettings.ServerConfig(
+                    "streamable-http",
+                    "http://127.0.0.1/mcp",
+                    Map.of(),
+                    true,
+                    new McpSettings.HealthCheckConfig("http://127.0.0.1/healthz", 1000),
+                    1000,
+                    Map.of(),
+                    null,
+                    List.of()));
         }
     }
 }

@@ -10,7 +10,11 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -27,6 +31,9 @@ import java.util.stream.Collectors;
  */
 @ApplicationScoped
 public class McpSettingsLoader {
+
+    private static final Pattern PROFILE_ID = Pattern.compile("^[a-z][a-z0-9-]{0,31}$");
+    private static final Pattern REPORT_PREFIX = Pattern.compile("^[a-z][a-z0-9_]{0,14}$");
 
     private final ObjectMapper objectMapper;
     private final Validator validator;
@@ -72,6 +79,77 @@ public class McpSettingsLoader {
                     "MCP config at " + configFile + " failed validation: " + details, "ValidationFailed");
         }
 
+        validateProfiles(settings);
         return settings;
+    }
+
+    /**
+     * Profile rules that Bean Validation cannot express: unique ids and prefixes, known servers,
+     * a non-empty resolved set, and {@code requireServers} contained in that set.
+     */
+    private void validateProfiles(McpSettings settings) {
+        List<RcaProfile> profiles = settings.rcaProfiles();
+        if (profiles.isEmpty()) {
+            return;
+        }
+
+        Set<String> servers = settings.mcpServers().keySet();
+        Set<String> ids = new HashSet<>();
+        Set<String> prefixes = new HashSet<>();
+        List<String> errors = new ArrayList<>();
+
+        for (RcaProfile profile : profiles) {
+            if (profile.id() == null || !PROFILE_ID.matcher(profile.id()).matches()) {
+                errors.add("rcaProfiles id '" + profile.id() + "' must match ^[a-z][a-z0-9-]{0,31}$");
+            } else if (!ids.add(profile.id())) {
+                errors.add("duplicate rcaProfiles id '" + profile.id() + "'");
+            }
+
+            if (profile.reportPrefix() == null || !REPORT_PREFIX.matcher(profile.reportPrefix()).matches()) {
+                errors.add("rcaProfiles reportPrefix '" + profile.reportPrefix()
+                        + "' must match ^[a-z][a-z0-9_]{0,14}$");
+            } else if (!prefixes.add(profile.reportPrefix())) {
+                errors.add("duplicate rcaProfiles reportPrefix '" + profile.reportPrefix() + "'");
+            }
+
+            for (String name : namedServers(profile)) {
+                if (!servers.contains(name)) {
+                    errors.add("rcaProfiles references unknown server '" + name + "'");
+                }
+            }
+
+            Set<String> resolved = profile.resolveServers(servers);
+            if (resolved.isEmpty()) {
+                errors.add("rcaProfiles id '" + profile.id() + "' resolves to an empty server set");
+            }
+            for (String required : profile.requireServers()) {
+                if (!resolved.contains(required)) {
+                    errors.add("rcaProfiles id '" + profile.id()
+                            + "' requireServers '" + required + "' is not in the resolved server set");
+                }
+            }
+        }
+
+        if (!errors.isEmpty()) {
+            throw new McpConfigLoadException(
+                    "MCP config at " + configFile + " failed validation: " + String.join("; ", errors),
+                    "ValidationFailed");
+        }
+    }
+
+    private static List<String> namedServers(RcaProfile profile) {
+        List<String> names = new ArrayList<>();
+        addNamed(names, profile.includeServers());
+        addNamed(names, profile.excludeServers());
+        addNamed(names, profile.requireServers());
+        return names;
+    }
+
+    private static void addNamed(List<String> names, List<String> source) {
+        for (String name : source) {
+            if (name != null && !"*".equals(name)) {
+                names.add(name);
+            }
+        }
     }
 }

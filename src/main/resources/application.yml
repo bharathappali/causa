@@ -126,6 +126,10 @@ causa:
       skills-dir: ${LLM_SKILLS_DIR:}
     google-application-credentials: ${GOOGLE_APPLICATION_CREDENTIALS:}
 
+  # RCA profile fan-out. Each profile is one diagnostic for the same alert.
+  rca:
+    max-parallel-profiles: ${CAUSA_RCA_MAX_PARALLEL_PROFILES:2}
+
   # Validation Configuration
   validation:
     assertion-analyzer:

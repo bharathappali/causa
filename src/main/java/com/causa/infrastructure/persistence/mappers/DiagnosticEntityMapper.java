@@ -20,6 +20,9 @@ import java.time.Instant;
  * <p>Field bridging:
  * <pre>
  *   diagnosticId       ↔  id
+ *   profileId          ↔  profileId
+ *   runGroupId         ↔  runGroupId
+ *   remarks            ↔  remarks
  *   faultDomain        ↔  issueType
  *   rootCauseAnalysis  ↔  rootCauseSummary  (+ issue_title / issue_description extracted on write)
  *   confidenceScore    ↔  confidenceInfo JSONB  { "score": 0.92 }
@@ -47,6 +50,9 @@ public final class DiagnosticEntityMapper {
 
         DiagnosticEntity entity = new DiagnosticEntity();
         entity.setId(d.getDiagnosticId());
+        entity.setProfileId(d.getProfileId() != null ? d.getProfileId() : "default");
+        entity.setRunGroupId(d.getRunGroupId());
+        entity.setRemarks(d.getRemarks());
 
         // FK reference — only the PK needs to be set for a merge/persist
         AlertEntity alertRef = new AlertEntity();
@@ -122,6 +128,9 @@ public final class DiagnosticEntityMapper {
         Diagnostic.Builder b = Diagnostic.builder()
             .diagnosticId(e.getId())
             .alertId(e.getAlertId())
+            .profileId(e.getProfileId())
+            .runGroupId(e.getRunGroupId())
+            .remarks(e.getRemarks())
             .status(DiagnosticStatus.fromString(e.getStatus()));
 
         // issueType → faultDomain

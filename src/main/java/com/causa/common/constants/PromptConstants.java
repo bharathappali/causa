@@ -52,6 +52,7 @@ public final class PromptConstants {
      * Template placeholder strings
      */
     public static final String PLACEHOLDER_CONTEXT = "{{context}}";
+    public static final String PLACEHOLDER_PROFILE_NOTE = "{{profile_note}}";
 
     public static final String PLACEHOLDER_SOURCE = "{{source}}";
     public static final String PLACEHOLDER_RCA_TEXT = "{{rca_text}}";

@@ -280,8 +280,8 @@ class WebhookControllerTest {
 
             Diagnostic d1 = buildDiagnostic("diag-1", "alert-1");
             Diagnostic d2 = buildDiagnostic("diag-2", "alert-2");
-            when(diagnosticService.triggerDiagnostics(a1)).thenReturn(d1);
-            when(diagnosticService.triggerDiagnostics(a2)).thenReturn(d2);
+            when(diagnosticService.triggerDiagnosticsForProfiles(a1)).thenReturn(List.of(d1));
+            when(diagnosticService.triggerDiagnosticsForProfiles(a2)).thenReturn(List.of(d2));
 
             Response response = controller.receiveAlerts(req);
 
@@ -308,7 +308,7 @@ class WebhookControllerTest {
             });
 
             Diagnostic d1 = buildDiagnostic("diag-1", "alert-1");
-            when(diagnosticService.triggerDiagnostics(a1)).thenReturn(d1);
+            when(diagnosticService.triggerDiagnosticsForProfiles(a1)).thenReturn(List.of(d1));
 
             Response response = controller.receiveAlerts(req);
 
@@ -370,11 +370,11 @@ class WebhookControllerTest {
             Alert a3 = buildDomainAlert("alert-3");
             when(alertMapper.toDomainList(req)).thenReturn(List.of(a1, a2, a3));
             when(alertService.processAlerts(anyList(), anyMap())).thenReturn(List.of(a1, a2, a3));
-            when(diagnosticService.triggerDiagnostics(any())).thenReturn(buildDiagnostic("d", "a"));
+            when(diagnosticService.triggerDiagnosticsForProfiles(any())).thenReturn(List.of(buildDiagnostic("d", "a")));
 
             controller.receiveAlerts(req);
 
-            verify(diagnosticService, times(3)).triggerDiagnostics(any(Alert.class));
+            verify(diagnosticService, times(3)).triggerDiagnosticsForProfiles(any(Alert.class));
         }
 
         @Test
@@ -386,13 +386,22 @@ class WebhookControllerTest {
             Alert a1 = buildDomainAlert("alert-abc");
             when(alertMapper.toDomainList(req)).thenReturn(List.of(a1));
             when(alertService.processAlerts(anyList(), anyMap())).thenReturn(List.of(a1));
-            when(diagnosticService.triggerDiagnostics(a1)).thenReturn(buildDiagnostic("diag-xyz", "alert-abc"));
+            Diagnostic diagnostic = Diagnostic.builder()
+                    .diagnosticId("diag-xyz")
+                    .alertId("alert-abc")
+                    .profileId("default")
+                    .status(com.causa.common.constants.DiagnosticConstants.DiagnosticStatus.PENDING)
+                    .generatedAt(Instant.now())
+                    .build();
+            when(diagnosticService.triggerDiagnosticsForProfiles(a1)).thenReturn(List.of(diagnostic));
 
             Response response = controller.receiveAlerts(req);
 
             WebhookResponse body = (WebhookResponse) response.getEntity();
             assertTrue(body.accepted().containsKey("alert-abc"));
             assertEquals("diag-xyz", body.accepted().get("alert-abc"));
+            assertEquals("default", body.diagnostics().get("alert-abc").get(0).profileId());
+            assertEquals("diag-xyz", body.diagnostics().get("alert-abc").get(0).id());
         }
     }
 

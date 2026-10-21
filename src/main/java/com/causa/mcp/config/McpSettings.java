@@ -16,18 +16,28 @@ import java.util.Map;
  * <p>Mirrors the already-committed schema under
  * {@code deployment/kubernetes/base/mcp-config/*.json} (Claude-Desktop/Bob-style {@code mcpServers}
  * map) exactly — field names ({@code optional}, {@code contextKey}) match the real files, not the
- * {@code required}/{@code dataType} naming from earlier design prose. All record types for this
- * config live in this one file for easy maintenance.
+ * {@code required}/{@code dataType} naming from earlier design prose. Server records live in this
+ * file; {@link RcaProfile} is separate because it is not a server.
  *
- * @param mcpServers server name → server config
+ * @param mcpServers  server name → server config
+ * @param rcaProfiles optional named RCA profiles; empty when the file omits the array
  * @since 0.0.1
  */
-public record McpSettings(@NotEmpty Map<String, @NotNull @Valid ServerConfig> mcpServers) {
+@JsonIgnoreProperties(ignoreUnknown = true)
+public record McpSettings(
+        @NotEmpty Map<String, @NotNull @Valid ServerConfig> mcpServers,
+        List<RcaProfile> rcaProfiles) {
+
+    /** Settings with no RCA profiles. Existing call sites keep a single-argument constructor. */
+    public McpSettings(Map<String, @NotNull @Valid ServerConfig> mcpServers) {
+        this(mcpServers, List.of());
+    }
 
     public McpSettings {
         // Map.copyOf() would throw NPE on a null-valued entry before Bean Validation ever runs;
         // @NotNull above reports it as a validation failure instead, so we just null-coalesce here.
         mcpServers = mcpServers != null ? mcpServers : Map.of();
+        rcaProfiles = rcaProfiles != null ? List.copyOf(rcaProfiles) : List.of();
     }
 
     /**

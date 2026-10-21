@@ -5,6 +5,7 @@ import com.causa.common.constants.ContextConstants;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Diagnostic Context
@@ -21,6 +22,9 @@ public final class DiagnosticContext {
 
     public static final String PLATFORM_CLUSTER = "cluster";
     public static final String PLATFORM_VM = "vm";
+    /** Server name for context that did not come from an MCP server. Every profile includes it. */
+    public static final String INTERNAL_SERVER = "internal";
+    private static final String CRYOSTAT_SERVER = "cryostat";
 
     // Identity (from Alert)
     private final String platform;
@@ -72,6 +76,8 @@ public final class DiagnosticContext {
 
     // Generic map to store dynamically collected context from mcps (contextKey -> tool result) map
     private final Map<String, String> contextData;
+    /** contextKey → MCP server that produced it. {@link #INTERNAL_SERVER} when the caller did not name a server. */
+    private final Map<String, String> contextSources;
 
     private DiagnosticContext(Builder builder) {
         this.platform = builder.platform;
@@ -107,6 +113,7 @@ public final class DiagnosticContext {
         this.threadContentionAnalysis = builder.threadContentionAnalysis;
         this.jvmRuntimeInfo = builder.jvmRuntimeInfo;
         this.contextData = Map.copyOf(builder.contextData);
+        this.contextSources = Map.copyOf(builder.contextSources);
     }
 
     // Getters
@@ -265,14 +272,50 @@ public final class DiagnosticContext {
     /**
      * Checks if any Cryostat context was collected.
      *
-     * @return true if any JFR analysis is present
+     * @return true if any JFR analysis is present, including {@code CRYOSTAT_*} sections from the cryostat server
      */
     public boolean hasCryostatContext() {
         return isNotBlank(gcAnalysis)
             || isNotBlank(memoryAnalysis)
             || isNotBlank(threadAnalysis)
             || isNotBlank(exceptionAnalysis)
-            || isNotBlank(containerAnalysis);
+            || isNotBlank(containerAnalysis)
+            || wroteCryostatSection("CRYOSTAT_ANALYSIS")
+            || wroteCryostatSection("CRYOSTAT_DISCOVERY");
+    }
+
+    private boolean wroteCryostatSection(String contextKey) {
+        return CRYOSTAT_SERVER.equals(contextSources.get(contextKey)) && isNotBlank(contextData.get(contextKey));
+    }
+
+    /**
+     * @return true when {@code server} wrote at least one non-blank section
+     */
+    public boolean hasDataFrom(String server) {
+        return server != null && contextSources.containsValue(server);
+    }
+
+    /**
+     * Returns a copy whose dynamic sections come from {@code servers} or {@link #INTERNAL_SERVER}.
+     * Header fields (platform, workload, pod, container, namespace) are kept.
+     */
+    public DiagnosticContext restrictTo(Set<String> servers) {
+        Set<String> allowed = servers != null ? servers : Set.of();
+        Builder copy = builder()
+                .platform(platform)
+                .workloadName(workloadName)
+                .podName(podName)
+                .containerName(containerName)
+                .namespace(namespace);
+        contextData.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> {
+                    String source = contextSources.getOrDefault(entry.getKey(), INTERNAL_SERVER);
+                    if (INTERNAL_SERVER.equals(source) || allowed.contains(source)) {
+                        copy.put(source, entry.getKey(), entry.getValue());
+                    }
+                });
+        return copy.build();
     }
 
     /**
@@ -368,7 +411,9 @@ public final class DiagnosticContext {
         sb.append(ContextConstants.LABEL_NAMESPACE).append(ContextConstants.FIELD_SEPARATOR)
             .append(namespace != null ? namespace : ContextConstants.LABEL_NOT_APPLICABLE).append(ContextConstants.NEWLINE).append(ContextConstants.NEWLINE);
 
-        contextData.forEach((contextKey, value) -> appendSection(sb, contextKey, value));
+        contextData.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> appendSection(sb, entry.getKey(), entry.getValue()));
 
         return sb.toString();
     }
@@ -502,6 +547,7 @@ public final class DiagnosticContext {
         private String jvmRuntimeInfo;
         // ConcurrentHashMap: MCP servers are now collected in parallel, so put() can race
         private final Map<String, String> contextData = new java.util.concurrent.ConcurrentHashMap<>();
+        private final Map<String, String> contextSources = new java.util.concurrent.ConcurrentHashMap<>();
 
         private Builder() {}
 
@@ -673,11 +719,22 @@ public final class DiagnosticContext {
             return this;
         }
 
-        /** Sets a value collected via the dynamic mcp.json path. No-ops on a blank contextKey/value. */
+        /** Sets a value with no MCP server. Stored as {@link DiagnosticContext#INTERNAL_SERVER}. */
         public Builder put(String contextKey, String value) {
-            if (contextKey != null && value != null && !value.isBlank()) {
-                contextData.put(contextKey, value);
+            return put(INTERNAL_SERVER, contextKey, value);
+        }
+
+        /**
+         * Sets a value collected from {@code server}. A null or blank server is stored as
+         * {@link DiagnosticContext#INTERNAL_SERVER}. No-ops on a blank contextKey or value.
+         */
+        public Builder put(String server, String contextKey, String value) {
+            if (contextKey == null || value == null || value.isBlank()) {
+                return this;
             }
+            String source = (server == null || server.isBlank()) ? INTERNAL_SERVER : server;
+            contextData.put(contextKey, value);
+            contextSources.put(contextKey, source);
             return this;
         }
 

@@ -19,6 +19,10 @@ public final class Diagnostic {
 
     private final String diagnosticId;
     private final String alertId;
+    /** RCA profile that produced this diagnostic. {@code default} when profiles are not configured. */
+    private final String profileId;
+    /** Shared 16-character suffix for every diagnostic created from the same alert. */
+    private final String runGroupId;
     private final DiagnosticStatus status;
     private final Instant generatedAt;
     private final Float confidenceScore;
@@ -31,10 +35,14 @@ public final class Diagnostic {
     private final String allEvidence;
     /** The user-facing subset of {@link #allEvidence}, selected once in the pipeline, as JSON. */
     private final String evidence;
+    /** Free-text note. Used for the reason when a profile is {@code SKIPPED}. */
+    private final String remarks;
 
     private Diagnostic(Builder builder) {
         this.diagnosticId    = Objects.requireNonNull(builder.diagnosticId, "diagnosticId cannot be null");
         this.alertId         = Objects.requireNonNull(builder.alertId, "alertId cannot be null");
+        this.profileId       = builder.profileId;
+        this.runGroupId      = builder.runGroupId;
         this.status          = Objects.requireNonNull(builder.status, "status cannot be null");
         this.generatedAt     = Objects.requireNonNull(builder.generatedAt, "generatedAt cannot be null");
         this.confidenceScore = builder.confidenceScore;
@@ -44,6 +52,7 @@ public final class Diagnostic {
         this.validationData  = builder.validationData;
         this.allEvidence     = builder.allEvidence;
         this.evidence        = builder.evidence;
+        this.remarks         = builder.remarks;
     }
 
     // -------------------------------------------------------------------------
@@ -52,6 +61,8 @@ public final class Diagnostic {
 
     public String getDiagnosticId()         { return diagnosticId; }
     public String getAlertId()              { return alertId; }
+    public String getProfileId()            { return profileId; }
+    public String getRunGroupId()           { return runGroupId; }
     public DiagnosticStatus getStatus()     { return status; }
     public Instant getGeneratedAt()         { return generatedAt; }
     public Float getConfidenceScore()       { return confidenceScore; }
@@ -64,10 +75,13 @@ public final class Diagnostic {
     public String getAllEvidence()          { return allEvidence; }
     /** Pre-selected user-facing evidence as JSON — null when no evidence was collected. */
     public String getEvidence()             { return evidence; }
+    /** Free-text note, including the reason a profile was skipped. */
+    public String getRemarks()              { return remarks; }
 
     /**
      * Generates a unique diagnostic ID: {@code diag_<16-char-alphanumeric>}.
-     * Total length = 21 chars, matching the {@code VARCHAR(21)} PK column.
+     * Total length = 21 chars. The diagnostics primary key is {@code VARCHAR(32)} so profile
+     * prefixes such as {@code cryo_diag} fit beside this default.
      *
      * @param alertId   unused — kept for call-site compatibility
      * @param timestamp unused — kept for call-site compatibility
@@ -91,13 +105,20 @@ public final class Diagnostic {
             /** Exact match on {@code workload_name} column (container name for k8s, workload name for VM). Null/blank → skip. */
             String workload,
             /** Exact match on {@code workload_info->>'namespace'} (JSONB via alerts JOIN). Null/blank → skip. */
-            String namespace
+            String namespace,
+            /** Exact match on {@code profile_id}. Null/blank → skip. */
+            String profile
     ) {
+        /** Workload and namespace only. Profile is unconstrained. */
+        public Filter(String workload, String namespace) {
+            this(workload, namespace, null);
+        }
+
         /** Returns a filter with no constraints — matches every diagnostic. */
-        public static Filter empty() { return new Filter(null, null); }
+        public static Filter empty() { return new Filter(null, null, null); }
 
         /** Returns {@code true} when every field is null or blank. */
-        public boolean isEmpty() { return isBlank(workload) && isBlank(namespace); }
+        public boolean isEmpty() { return isBlank(workload) && isBlank(namespace) && isBlank(profile); }
 
         private static boolean isBlank(String s) { return s == null || s.isBlank(); }
     }
@@ -109,6 +130,8 @@ public final class Diagnostic {
     public static final class Builder {
         private String diagnosticId;
         private String alertId;
+        private String profileId;
+        private String runGroupId;
         private DiagnosticStatus status;
         private Instant generatedAt;
         private Float confidenceScore;
@@ -118,11 +141,14 @@ public final class Diagnostic {
         private String validationData;
         private String allEvidence;
         private String evidence;
+        private String remarks;
 
         private Builder() {}
 
         public Builder diagnosticId(String v)        { this.diagnosticId = v;    return this; }
         public Builder alertId(String v)              { this.alertId = v;         return this; }
+        public Builder profileId(String v)            { this.profileId = v;       return this; }
+        public Builder runGroupId(String v)           { this.runGroupId = v;      return this; }
         public Builder status(DiagnosticStatus v)     { this.status = v;          return this; }
         public Builder generatedAt(Instant v)         { this.generatedAt = v;     return this; }
         public Builder confidenceScore(Float v)       { this.confidenceScore = v; return this; }
@@ -132,6 +158,7 @@ public final class Diagnostic {
         public Builder validationData(String v)       { this.validationData = v;  return this; }
         public Builder allEvidence(String v)          { this.allEvidence = v;     return this; }
         public Builder evidence(String v)             { this.evidence = v;        return this; }
+        public Builder remarks(String v)              { this.remarks = v;         return this; }
 
         public Diagnostic build() { return new Diagnostic(this); }
     }
@@ -154,6 +181,8 @@ public final class Diagnostic {
         return "Diagnostic{" +
             "diagnosticId='" + diagnosticId + '\'' +
             ", alertId='" + alertId + '\'' +
+            ", profileId='" + profileId + '\'' +
+            ", runGroupId='" + runGroupId + '\'' +
             ", status=" + status +
             ", generatedAt=" + generatedAt +
             ", confidenceScore=" + confidenceScore +

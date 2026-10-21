@@ -65,7 +65,9 @@ public final class DiagnosticConstants {
         IN_PROGRESS("IN_PROGRESS"),
         VALIDATING("VALIDATING"),
         COMPLETED("COMPLETED"),
-        FAILED("FAILED");
+        FAILED("FAILED"),
+        /** Profile did not call the LLM because a required MCP server returned no data. */
+        SKIPPED("SKIPPED");
 
         private final String value;
 

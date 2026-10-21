@@ -4,6 +4,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.util.Set;
+
 import static org.assertj.core.api.Assertions.*;
 
 @DisplayName("DiagnosticContext Tests")
@@ -139,5 +141,52 @@ class DiagnosticContextTest {
     @Test void platformConstants_defined() {
         assertThat(DiagnosticContext.PLATFORM_CLUSTER).isEqualTo("cluster");
         assertThat(DiagnosticContext.PLATFORM_VM).isEqualTo("vm");
+    }
+
+    @Nested @DisplayName("provenance and filtering")
+    class ProvenanceTests {
+        @Test void putWithoutServerIsInternalAndIncludedByEveryProfile() {
+            DiagnosticContext ctx = DiagnosticContext.builder()
+                .podName("pod-1")
+                .put("NOTE", "hello")
+                .put("cryostat", "CRYOSTAT_ANALYSIS", "hot allocation")
+                .put("kubernetes", "POD_STATUS", "Running")
+                .build();
+
+            assertThat(ctx.hasDataFrom("cryostat")).isTrue();
+            assertThat(ctx.hasDataFrom("kubernetes")).isTrue();
+            assertThat(ctx.hasDataFrom("kruize")).isFalse();
+            assertThat(ctx.hasDataFrom(DiagnosticContext.INTERNAL_SERVER)).isTrue();
+            assertThat(ctx.hasCryostatContext()).isTrue();
+
+            DiagnosticContext baseline = ctx.restrictTo(Set.of("kubernetes"));
+            assertThat(baseline.getPodName()).isEqualTo("pod-1");
+            assertThat(baseline.get("POD_STATUS")).isEqualTo("Running");
+            assertThat(baseline.get("NOTE")).isEqualTo("hello");
+            assertThat(baseline.get("CRYOSTAT_ANALYSIS")).isNull();
+            assertThat(baseline.hasDataFrom("cryostat")).isFalse();
+            assertThat(baseline.hasCryostatContext()).isFalse();
+        }
+
+        @Test void cryostatKeysFromAnotherServerAreNotCryostatContext() {
+            DiagnosticContext ctx = DiagnosticContext.builder()
+                .put("kubernetes", "CRYOSTAT_ANALYSIS", "not really cryostat")
+                .build();
+            assertThat(ctx.hasCryostatContext()).isFalse();
+            assertThat(ctx.hasDataFrom("kubernetes")).isTrue();
+        }
+
+        @Test void toStringOrderIsStable() {
+            DiagnosticContext first = DiagnosticContext.builder()
+                .put("b", "Z_SECTION", "later")
+                .put("a", "A_SECTION", "earlier")
+                .build();
+            DiagnosticContext second = DiagnosticContext.builder()
+                .put("a", "A_SECTION", "earlier")
+                .put("b", "Z_SECTION", "later")
+                .build();
+            assertThat(first.toString()).isEqualTo(second.toString());
+            assertThat(first.toString().indexOf("A_SECTION")).isLessThan(first.toString().indexOf("Z_SECTION"));
+        }
     }
 }

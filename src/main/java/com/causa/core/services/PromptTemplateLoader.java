@@ -212,7 +212,14 @@ public class PromptTemplateLoader {
         String verificationRecommendation
     ) {
         public String render(String context) {
-            return userPrompt.replace(PromptConstants.PLACEHOLDER_CONTEXT, context);
+            return render(context, "");
+        }
+
+        public String render(String context, String profileNote) {
+            String note = profileNote != null ? profileNote : "";
+            return userPrompt
+                    .replace(PromptConstants.PLACEHOLDER_PROFILE_NOTE, note)
+                    .replace(PromptConstants.PLACEHOLDER_CONTEXT, context);
         }
 
         /**

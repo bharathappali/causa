@@ -64,6 +64,33 @@ via a ConfigMap volume.
 | `description` | No | Plain-English summary of the server |
 | `tools` | No | Ordered tool-invocation plan with `name`, `contextKey`, `description`, `arguments` |
 
+### RCA profiles
+
+An optional top-level `rcaProfiles` array makes one alert produce one diagnostic per profile. Each profile names the MCP servers its RCA is allowed to see. The servers are still called once per alert; each profile then receives a filtered copy of that context.
+
+If `rcaProfiles` is missing or empty, Causa uses one implicit profile `{ "id": "default", "reportPrefix": "diag", "includeServers": ["*"] }`, which is today's single `diag_<16>` report. The cluster file defines two profiles. The developer and VM files omit the array, so they keep that implicit default.
+
+```json
+"rcaProfiles": [
+  { "id": "cryo", "reportPrefix": "cryo_diag", "description": "All MCPs incl. Cryostat JFR",
+    "includeServers": ["*"], "requireServers": ["cryostat"], "skipIfRequiredMissing": false },
+  { "id": "default", "reportPrefix": "diag", "description": "Baseline without Cryostat",
+    "includeServers": ["*"], "excludeServers": ["cryostat"] }
+]
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `id` | required | Unique profile id matching `^[a-z][a-z0-9-]{0,31}$`. Stored on `diagnostics.profile_id`. |
+| `reportPrefix` | required | Unique diagnostic id prefix matching `^[a-z][a-z0-9_]{0,14}$`. The id is `{reportPrefix}_{suffix}`. |
+| `description` | none | Human-readable summary. |
+| `includeServers` | `["*"]` | Servers in the profile. `"*"` means every server in `mcpServers`. |
+| `excludeServers` | `[]` | Removed from the include set. |
+| `requireServers` | `[]` | Must be part of the resolved server set. |
+| `skipIfRequiredMissing` | `false` | When `true`, the profile is `SKIPPED` and the LLM is not called if a required server returned no data. |
+
+Both reports for one alert share the same 16-character suffix (`diagnostics.run_group_id`). Startup rejects a duplicate id or prefix, an unknown server name, an empty resolved set, or a required server that the profile excludes. How many profiles may call the LLM at once is `causa.rca.max-parallel-profiles` (default 2).
+
 ### Environment variable
 
 | Tunable | Env var | Default (prod) | Default (dev) | Description |

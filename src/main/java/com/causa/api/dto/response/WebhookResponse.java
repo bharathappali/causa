@@ -3,6 +3,7 @@ package com.causa.api.dto.response;
 import com.causa.common.constants.AlertConstants;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -18,10 +19,22 @@ public record WebhookResponse(
     int totalRejected,
     Map<String, String> accepted,
     Map<String, String> rejected,
+    /** Every diagnostic created for an accepted alert, including profile id. */
+    Map<String, List<DiagnosticRef>> diagnostics,
     Instant timestamp
 ) {
 
+    /** One diagnostic created for an alert. {@code accepted} still points at the default profile. */
+    public record DiagnosticRef(String id, String profileId) {}
+
     public static WebhookResponse of(Map<String, String> accepted, Map<String, String> rejected) {
+        return of(accepted, rejected, Map.of());
+    }
+
+    public static WebhookResponse of(
+            Map<String, String> accepted,
+            Map<String, String> rejected,
+            Map<String, List<DiagnosticRef>> diagnostics) {
         int acc   = accepted.size();
         int rej   = rejected.size();
         int total = acc + rej;
@@ -42,6 +55,7 @@ public record WebhookResponse(
             message = String.format("All %d alerts rejected (severity/namespace/cooldown)", rej);
         }
 
-        return new WebhookResponse(status, message, total, acc, rej, accepted, rejected, Instant.now());
+        Map<String, List<DiagnosticRef>> refs = diagnostics != null ? diagnostics : Map.of();
+        return new WebhookResponse(status, message, total, acc, rej, accepted, rejected, refs, Instant.now());
     }
 }

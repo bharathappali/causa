@@ -29,7 +29,8 @@ public final class AsyncProfilerContextCollector {
         }
 
         String podListJson = client.callTool("list_profiled_pods", Map.of());
-        builder.put(listTool.contextKey(), McpResponseFormatter.format(client.getServerName(), "list_profiled_pods", podListJson));
+        builder.put(client.getServerName(), listTool.contextKey(),
+                McpResponseFormatter.format(client.getServerName(), "list_profiled_pods", podListJson));
 
         String recordingId = extractLatestRecordingId(podListJson, alert.getWorkloadInfo().podName());
         Map<String, String> extraTokens = recordingId != null ? Map.of("recordingId", recordingId) : Map.of();

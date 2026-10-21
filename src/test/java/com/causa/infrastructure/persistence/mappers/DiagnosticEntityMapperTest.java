@@ -56,6 +56,29 @@ class DiagnosticEntityMapperTest {
         @Test void confidenceInfoSet()     { assertThat(DiagnosticEntityMapper.toEntity(minimal()).getConfidenceInfo()).isNotNull(); }
         @Test void issueTypeMapped()       { assertThat(DiagnosticEntityMapper.toEntity(minimal()).getIssueType()).isEqualTo("OOM_KILLED"); }
         @Test void validationResultMapped(){ assertThat(DiagnosticEntityMapper.toEntity(minimal()).getValidationResult()).isEqualTo("VALIDATED"); }
+        @Test void missingProfileDefaultsToDefault() {
+            assertThat(DiagnosticEntityMapper.toEntity(minimal()).getProfileId()).isEqualTo("default");
+        }
+        @Test void profileRunGroupAndRemarksMapped() {
+            Diagnostic d = Diagnostic.builder()
+                .diagnosticId("cryo_diag_abcdefghijklmnop")
+                .alertId("alrt_test00000001234")
+                .profileId("cryo")
+                .runGroupId("abcdefghijklmnop")
+                .remarks("cryostat returned no data")
+                .status(DiagnosticStatus.COMPLETED)
+                .generatedAt(Instant.now())
+                .build();
+            DiagnosticEntity e = DiagnosticEntityMapper.toEntity(d);
+            assertThat(e.getProfileId()).isEqualTo("cryo");
+            assertThat(e.getRunGroupId()).isEqualTo("abcdefghijklmnop");
+            assertThat(e.getRemarks()).isEqualTo("cryostat returned no data");
+            e.createdAt = java.time.OffsetDateTime.now();
+            Diagnostic restored = DiagnosticEntityMapper.toDomain(e);
+            assertThat(restored.getProfileId()).isEqualTo("cryo");
+            assertThat(restored.getRunGroupId()).isEqualTo("abcdefghijklmnop");
+            assertThat(restored.getRemarks()).isEqualTo("cryostat returned no data");
+        }
         @Test void rcaSerialized() {
             DiagnosticEntity e = DiagnosticEntityMapper.toEntity(withRca());
             assertThat(e.getRootCauseSummary()).contains("OOM Issue");

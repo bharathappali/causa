@@ -90,5 +90,22 @@
         }
       ]
     }
-  }
+  },
+  "rcaProfiles": [
+    {
+      "id": "cryo",
+      "reportPrefix": "cryo_diag",
+      "description": "All MCPs incl. Cryostat JFR",
+      "includeServers": ["*"],
+      "requireServers": ["cryostat"],
+      "skipIfRequiredMissing": false
+    },
+    {
+      "id": "default",
+      "reportPrefix": "diag",
+      "description": "Baseline without Cryostat",
+      "includeServers": ["*"],
+      "excludeServers": ["cryostat"]
+    }
+  ]
 }

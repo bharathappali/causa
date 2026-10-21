@@ -14,10 +14,14 @@ import org.apache.commons.lang3.RandomStringUtils;
  * — cryptographically strong and thread-safe. Produces 16 characters from a 62-char alphabet
  * (0-9, a-z, A-Z), giving ~95 bits of entropy per ID (vs ~64 bits from a UUID hex substring).
  *
+ * <p>Diagnostic IDs are {@code {reportPrefix}_{16-char-suffix}}. The default prefix {@code diag}
+ * yields 21 characters. A profile prefix may be up to 15 characters, so the diagnostics
+ * primary key is {@code VARCHAR(32)}.
+ *
  * <p>ID prefixes per table:
  * <pre>
  *   alerts          → alrt_&lt;16&gt;
- *   diagnostics     → diag_&lt;16&gt;
+ *   diagnostics     → {reportPrefix}_&lt;16&gt;  (default diag_&lt;16&gt;)
  *   context_data    → ctxd_&lt;16&gt;
  *   feedback        → fdbk_&lt;16&gt;
  *   configurations  → cnfg_&lt;16&gt;
@@ -48,7 +52,26 @@ public final class IdUtils {
      * Total length = 21 chars.
      */
     public static String generateDiagnosticId() {
-        return "diag_" + randomAlphanumeric16();
+        return diagnosticId("diag", newDiagnosticSuffix());
+    }
+
+    /**
+     * Returns 16 alphanumeric characters from a SecureRandom source.
+     * Shared by every diagnostic created for the same alert so their IDs differ only by prefix.
+     */
+    public static String newDiagnosticSuffix() {
+        return randomAlphanumeric16();
+    }
+
+    /**
+     * Builds a diagnostic ID from a report prefix and a shared suffix: {@code prefix_suffix}.
+     *
+     * @param prefix report prefix ({@code diag}, {@code cryo_diag}, …)
+     * @param suffix 16-character alphanumeric suffix from {@link #newDiagnosticSuffix()}
+     * @return {@code prefix + "_" + suffix}
+     */
+    public static String diagnosticId(String prefix, String suffix) {
+        return prefix + "_" + suffix;
     }
 
     /**

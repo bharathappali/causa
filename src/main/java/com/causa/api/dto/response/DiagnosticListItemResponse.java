@@ -22,6 +22,12 @@ public record DiagnosticListItemResponse(
     @JsonProperty("status")
     String status,
 
+    @JsonProperty("profile_id")
+    String profileId,
+
+    @JsonProperty("run_group_id")
+    String runGroupId,
+
     @JsonProperty("issue")
     String issue,
 
@@ -57,6 +63,8 @@ public record DiagnosticListItemResponse(
         return new DiagnosticListItemResponse(
             diagnostic.getDiagnosticId(),
             diagnostic.getStatus() != null ? diagnostic.getStatus().getValue() : null,
+            diagnostic.getProfileId(),
+            diagnostic.getRunGroupId(),
             issueTitle,
             issueSummary,
             workload,

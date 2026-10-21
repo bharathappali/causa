@@ -13,6 +13,7 @@ import com.causa.common.logging.CausaLogger;
 import com.causa.common.logging.LogMessages;
 import com.causa.common.utils.IdUtils;
 import com.causa.config.LlmConfigCache;
+import com.causa.config.RcaConfig;
 import com.causa.core.domain.Alert;
 import com.causa.core.domain.Diagnostic;
 import com.causa.core.domain.DiagnosticContext;
@@ -32,6 +33,7 @@ import com.causa.core.services.RcaPromptBuilder;
 import com.causa.core.services.validation.RcaValidator;
 import com.causa.infrastructure.persistence.mappers.AlertEntityMapper;
 import com.causa.mcp.McpRegistry;
+import com.causa.mcp.config.RcaProfile;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
@@ -40,11 +42,17 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.regex.Matcher;
+import java.util.stream.Collectors;
 
 /**
  * Diagnostic Service Implementation
@@ -72,6 +80,7 @@ public class DiagnosticServiceImpl implements DiagnosticService {
     private final LlmConfigCache llmConfigCache;
     private final ObjectMapper objectMapper;
     private final Validator validator;
+    private final RcaConfig rcaConfig;
     private final ExecutorService pipelineExecutor;
     private final Optional<RcaValidator> rcaValidator;
 
@@ -84,6 +93,7 @@ public class DiagnosticServiceImpl implements DiagnosticService {
                                   LlmConfigCache llmConfigCache,
                                   ObjectMapper objectMapper,
                                   Validator validator,
+                                  RcaConfig rcaConfig,
                                   Instance<RcaValidator> rcaValidatorInstance) {
         this.diagnosticRepository = diagnosticRepository;
         this.alertRepository      = alertRepository;
@@ -93,172 +103,116 @@ public class DiagnosticServiceImpl implements DiagnosticService {
         this.llmConfigCache       = llmConfigCache;
         this.objectMapper         = objectMapper;
         this.validator            = validator;
+        this.rcaConfig            = rcaConfig;
         this.pipelineExecutor     = Executors.newCachedThreadPool();
         this.rcaValidator         = rcaValidatorInstance.isResolvable() ?
             Optional.of(rcaValidatorInstance.get()) : Optional.empty();
     }
 
+    private static final RcaProfile IMPLICIT_DEFAULT = new RcaProfile(
+            "default", "diag", null, List.of("*"), List.of(), List.of(), false);
+
     @Override
     public Diagnostic triggerDiagnostics(Alert alert) {
+        List<Diagnostic> created = triggerDiagnosticsForProfiles(alert);
+        return created.stream()
+                .filter(d -> "default".equals(d.getProfileId()))
+                .findFirst()
+                .orElse(created.get(0));
+    }
+
+    @Override
+    public List<Diagnostic> triggerDiagnosticsForProfiles(Alert alert) {
         log.info(LogMessages.Diagnostic.DIAGNOSTIC_TRIGGERED)
             .field("alertId", alert.getAlertId())
             .field("alertName", alert.getAlertName())
             .log();
 
-        // Generate diagnostic ID in diag_<16> format (VARCHAR(21) in DB)
+        List<RcaProfile> profiles = activeProfiles();
+        String suffix = IdUtils.newDiagnosticSuffix();
         Instant now = Instant.now();
-        String diagnosticId = IdUtils.generateDiagnosticId();
+        List<ProfileRun> runs = new ArrayList<>();
+        List<Diagnostic> pending = new ArrayList<>();
+        for (RcaProfile profile : profiles) {
+            Diagnostic diagnostic = diagnosticRepository.save(Diagnostic.builder()
+                    .diagnosticId(IdUtils.diagnosticId(profile.reportPrefix(), suffix))
+                    .alertId(alert.getAlertId())
+                    .profileId(profile.id())
+                    .runGroupId(suffix)
+                    .status(DiagnosticStatus.PENDING)
+                    .generatedAt(now)
+                    .build());
+            pending.add(diagnostic);
+            runs.add(new ProfileRun(profile, diagnostic));
+            log.info(LogMessages.Diagnostic.DIAGNOSTIC_INITIATED)
+                .field("diagnosticId", diagnostic.getDiagnosticId())
+                .field("alertId", alert.getAlertId())
+                .field("profileId", profile.id())
+                .field("status", DiagnosticStatus.PENDING.getValue())
+                .log();
+        }
 
-        // Persist diagnostic with PENDING status immediately — this is returned to the caller
-        // before the LLM pipeline even starts.
-        Diagnostic diagnostic = Diagnostic.builder()
-            .diagnosticId(diagnosticId)
-            .alertId(alert.getAlertId())
-            .status(DiagnosticStatus.PENDING)
-            .generatedAt(now)
-            .build();
-
-        diagnostic = diagnosticRepository.save(diagnostic);
-
-        log.info(LogMessages.Diagnostic.DIAGNOSTIC_INITIATED)
-            .field("diagnosticId", diagnosticId)
-            .field("alertId", alert.getAlertId())
-            .field("status", DiagnosticStatus.PENDING.getValue())
-            .log();
-
-        // Fire-and-forget: dispatch the full MCP + LLM pipeline to a background thread.
-        // The HTTP response is returned immediately — the caller is NOT blocked.
-        // Capture finals for the lambda.
-        final Diagnostic pendingDiagnostic = diagnostic;
-        final Alert      capturedAlert     = alert;
-        pipelineExecutor.submit(() -> runPipelineAsync(capturedAlert, pendingDiagnostic));
-
-        return diagnostic;
+        final Alert capturedAlert = alert;
+        final List<ProfileRun> capturedRuns = List.copyOf(runs);
+        pipelineExecutor.submit(() -> runMultiProfilePipeline(capturedAlert, capturedRuns));
+        return List.copyOf(pending);
     }
 
     /**
-     * Runs the full MCP context collection + LLM pipeline on a background thread.
-     *
-     * <p>Called exclusively by {@link #triggerDiagnostics} via {@link ExecutorService} —
-     * never on the HTTP request thread.
-     *
-     * <p>Status lifecycle managed here:
-     * <ol>
-     *   <li>PENDING  — set by {@link #triggerDiagnostics} before this method is called</li>
-     *   <li>IN_PROGRESS — set at the start of this method, before any MCP/LLM work</li>
-     *   <li>COMPLETED or FAILED — set on finish</li>
-     * </ol>
-     *
-     * <p>On success → diagnostic COMPLETED, alert PROCESSED.<br>
-     * On failure → diagnostic FAILED, alert PROCESSED.
-     *
-     * @param alert   the accepted alert being analyzed
-     * @param pending the PENDING diagnostic row already saved to the DB
+     * Collects the union of every profile's servers once, then runs each profile on that filtered
+     * context. One profile failing or being skipped does not stop the others. The alert is marked
+     * PROCESSED only after every profile has finished.
      */
-    private void runPipelineAsync(Alert alert, Diagnostic pending) {
-        String diagnosticId = pending.getDiagnosticId();
-
-        log.info(LogMessages.Diagnostic.DIAGNOSTIC_PIPELINE_START)
-            .field("diagnosticId", diagnosticId)
-            .field("alertId", alert.getAlertId())
-            .log();
-
-        // Mark diagnostic IN_PROGRESS immediately so callers polling the status see active work
-        Diagnostic inProgress = Diagnostic.builder()
-            .diagnosticId(pending.getDiagnosticId())
-            .alertId(pending.getAlertId())
-            .status(DiagnosticStatus.IN_PROGRESS)
-            .generatedAt(pending.getGeneratedAt())
-            .build();
-        diagnosticRepository.update(inProgress);
-
+    private void runMultiProfilePipeline(Alert alert, List<ProfileRun> runs) {
         try {
-            // Step 1: Collect diagnostic context from MCP servers (K8s, Kruize, Cryostat)
-            DiagnosticContext diagnosticContext = collectContext(alert);
+            Set<String> serverNames = new HashSet<>();
+            for (var client : mcpRegistry.allClients()) {
+                serverNames.add(client.getServerName());
+            }
+            Set<String> union = new LinkedHashSet<>();
+            for (ProfileRun run : runs) {
+                union.addAll(run.profile().resolveServers(serverNames));
+            }
 
-            log.info(LogMessages.Diagnostic.CONTEXT_COLLECTED)
-                .field(Fields.DIAGNOSTIC_ID, diagnosticId)
-                .field(LogFields.ALERT_ID, alert.getAlertId())
-                .field(LogFields.HAS_K8S_CONTEXT, diagnosticContext.hasKubernetesContext())
-                .field(LogFields.HAS_KRUIZE_CONTEXT, diagnosticContext.hasKruizeContext())
-                .field(LogFields.HAS_CRYOSTAT_CONTEXT, diagnosticContext.hasCryostatContext())
-                .log();
-
-            // Step 2: Format context for LLM
-            String contextForLLM = diagnosticContext.toString();
-            String separator = ContextConstants.SEPARATOR_CHAR.repeat(ContextConstants.SEPARATOR_LENGTH);
-
-            log.info(ContextConstants.NEWLINE + separator + ContextConstants.NEWLINE +
-                     ContextConstants.CONTEXT_LOG_HEADER + ContextConstants.NEWLINE +
-                     separator + ContextConstants.NEWLINE +
-                     contextForLLM +
-                     separator + ContextConstants.NEWLINE)
-                .field(Fields.DIAGNOSTIC_ID, diagnosticId)
-                .log();
-
-            // Step 3: Perform root cause analysis using LLM
-            RootCauseAnalysis rca = performRootCauseAnalysis(alert, contextForLLM);
-
-            // Step 4: Mark VALIDATING — RCA done, validation about to start
-            Diagnostic validating = Diagnostic.builder()
-                .diagnosticId(pending.getDiagnosticId())
-                .alertId(pending.getAlertId())
-                .status(DiagnosticStatus.VALIDATING)
-                .generatedAt(pending.getGeneratedAt())
-                .build();
-            diagnosticRepository.update(validating);
-
-            log.info("Diagnostic status set to VALIDATING")
-                .field("diagnosticId", diagnosticId)
+            log.debug(LogMessages.Diagnostic.CONTEXT_COLLECTION_STARTED)
                 .field("alertId", alert.getAlertId())
+                .field("servers", union.toString())
                 .log();
+            DiagnosticContext fullCtx = mcpRegistry.collectContext(alert, union);
+            if (fullCtx == null) {
+                fullCtx = DiagnosticContext.builder().build();
+            }
 
-            // Step 5: Validate RCA against collected context
-            ValidatedRCA validatedRCA = validateRca(alert, rca, contextForLLM);
-
-            log.info(LogMessages.Diagnostic.DIAGNOSTIC_COMPLETED)
-                .field("diagnosticId", diagnosticId)
-                .field("alertId", alert.getAlertId())
-                .field("anomalyType", rca.anomalyType())
-                .log();
-
-            // Step 6: Persist completed diagnostic with RCA + validation results
-            updateDiagnosticWithValidation(pending, rca, validatedRCA);
-
-            // Step 6: Mark alert PROCESSED — pipeline finished successfully
-            alertRepository.updateProcessingStatus(alert.getAlertId(), AlertEntityMapper.STATUS_PROCESSED);
-
-            log.info(LogMessages.Diagnostic.DIAGNOSTIC_PIPELINE_DONE)
-                .field("diagnosticId", diagnosticId)
-                .field("alertId", alert.getAlertId())
-                .log();
-
+            int parallelism = Math.max(1, Math.min(runs.size(), rcaConfig.maxParallelProfiles()));
+            ExecutorService profileExecutor = Executors.newFixedThreadPool(parallelism);
+            try {
+                List<Future<?>> futures = new ArrayList<>();
+                DiagnosticContext captured = fullCtx;
+                for (ProfileRun run : runs) {
+                    futures.add(profileExecutor.submit(() -> runProfile(alert, run, captured, serverNames)));
+                }
+                for (Future<?> future : futures) {
+                    try {
+                        future.get();
+                    } catch (Exception e) {
+                        log.error(LogMessages.Diagnostic.DIAGNOSTIC_PIPELINE_FAILED)
+                            .field("alertId", alert.getAlertId())
+                            .exception(e)
+                            .log();
+                    }
+                }
+            } finally {
+                profileExecutor.shutdown();
+            }
         } catch (Exception e) {
-            // MCP / LLM failure — update both records and log. Does NOT affect the HTTP response
-            // since this runs on a background thread after the response was already sent.
             log.error(LogMessages.Diagnostic.DIAGNOSTIC_PIPELINE_FAILED)
-                .field("diagnosticId", diagnosticId)
                 .field("alertId", alert.getAlertId())
                 .exception(e)
                 .log();
-
-            // Mark diagnostic FAILED
-            try {
-                Diagnostic failed = Diagnostic.builder()
-                    .diagnosticId(pending.getDiagnosticId())
-                    .alertId(pending.getAlertId())
-                    .status(DiagnosticStatus.FAILED)
-                    .generatedAt(pending.getGeneratedAt())
-                    .build();
-                diagnosticRepository.update(failed);
-            } catch (Exception ex) {
-                log.error(LogMessages.Diagnostic.DIAGNOSTIC_UPDATE_FAILED)
-                    .field("diagnosticId", diagnosticId)
-                    .exception(ex)
-                    .log();
+            for (ProfileRun run : runs) {
+                markFailed(run.diagnostic(), e);
             }
-
-            // Mark alert PROCESSED regardless — it was received and attempted
+        } finally {
             try {
                 alertRepository.updateProcessingStatus(alert.getAlertId(), AlertEntityMapper.STATUS_PROCESSED);
             } catch (Exception ex) {
@@ -270,22 +224,127 @@ public class DiagnosticServiceImpl implements DiagnosticService {
         }
     }
 
-    /**
-     * Collects diagnostic context from all MCP servers (Kubernetes, Cryostat, Kruize).
-     *
-     * <p>Aggregates pod status, events, logs, resource recommendations, and JFR analysis
-     * from multiple MCP servers into a single {@link com.causa.core.domain.DiagnosticContext} object.
-     *
-     * @param alert the alert to collect context for
-     * @return diagnostic context with all collected data
-     */
-    private DiagnosticContext collectContext(Alert alert) {
-        log.debug(LogMessages.Diagnostic.CONTEXT_COLLECTION_STARTED)
-            .field("alertId", alert.getAlertId())
-            .log();
+    private void runProfile(Alert alert, ProfileRun run, DiagnosticContext fullCtx, Set<String> serverNames) {
+        Diagnostic pending = run.diagnostic();
+        RcaProfile profile = run.profile();
+        String diagnosticId = pending.getDiagnosticId();
+        try {
+            Set<String> servers = profile.resolveServers(serverNames);
+            DiagnosticContext ctx = fullCtx.restrictTo(servers);
+            if (shouldSkip(profile, ctx)) {
+                String missing = profile.requireServers().stream()
+                        .filter(server -> !ctx.hasDataFrom(server))
+                        .collect(Collectors.joining(", "));
+                diagnosticRepository.update(identified(pending)
+                        .status(DiagnosticStatus.SKIPPED)
+                        .remarks("Required MCP server returned no data: " + missing)
+                        .build());
+                log.info("RCA profile skipped")
+                    .field("diagnosticId", diagnosticId)
+                    .field("alertId", alert.getAlertId())
+                    .field("profileId", profile.id())
+                    .field("missingServers", missing)
+                    .log();
+                return;
+            }
 
-        return mcpRegistry.collectContext(alert);
+            diagnosticRepository.update(identified(pending).status(DiagnosticStatus.IN_PROGRESS).build());
+
+            log.info(LogMessages.Diagnostic.CONTEXT_COLLECTED)
+                .field(Fields.DIAGNOSTIC_ID, diagnosticId)
+                .field(LogFields.ALERT_ID, alert.getAlertId())
+                .field("profileId", profile.id())
+                .field(LogFields.HAS_K8S_CONTEXT, ctx.hasKubernetesContext())
+                .field(LogFields.HAS_KRUIZE_CONTEXT, ctx.hasKruizeContext())
+                .field(LogFields.HAS_CRYOSTAT_CONTEXT, ctx.hasCryostatContext())
+                .log();
+
+            String contextForLLM = ctx.toString();
+            String separator = ContextConstants.SEPARATOR_CHAR.repeat(ContextConstants.SEPARATOR_LENGTH);
+            log.info(ContextConstants.NEWLINE + separator + ContextConstants.NEWLINE +
+                     ContextConstants.CONTEXT_LOG_HEADER + ContextConstants.NEWLINE +
+                     separator + ContextConstants.NEWLINE +
+                     contextForLLM +
+                     separator + ContextConstants.NEWLINE)
+                .field(Fields.DIAGNOSTIC_ID, diagnosticId)
+                .field("profileId", profile.id())
+                .log();
+
+            // TODO(rca-profiles): run per profile on filtered context
+            String profileNote = RcaPromptBuilder.profileNote(servers, serverNames);
+            RootCauseAnalysis rca = performRootCauseAnalysis(alert, contextForLLM, profile, profileNote);
+
+            diagnosticRepository.update(identified(pending).status(DiagnosticStatus.VALIDATING).build());
+            log.info("Diagnostic status set to VALIDATING")
+                .field("diagnosticId", diagnosticId)
+                .field("alertId", alert.getAlertId())
+                .field("profileId", profile.id())
+                .log();
+
+            ValidatedRCA validatedRCA = validateRca(alert, rca, contextForLLM);
+            log.info(LogMessages.Diagnostic.DIAGNOSTIC_COMPLETED)
+                .field("diagnosticId", diagnosticId)
+                .field("alertId", alert.getAlertId())
+                .field("profileId", profile.id())
+                .field("anomalyType", rca.anomalyType())
+                .log();
+            updateDiagnosticWithValidation(pending, rca, validatedRCA);
+        } catch (Exception e) {
+            log.error(LogMessages.Diagnostic.DIAGNOSTIC_PIPELINE_FAILED)
+                .field("diagnosticId", diagnosticId)
+                .field("alertId", alert.getAlertId())
+                .field("profileId", profile.id())
+                .exception(e)
+                .log();
+            markFailed(pending, e);
+        }
     }
+
+    private static boolean shouldSkip(RcaProfile profile, DiagnosticContext ctx) {
+        if (!Boolean.TRUE.equals(profile.skipIfRequiredMissing())) {
+            return false;
+        }
+        for (String required : profile.requireServers()) {
+            if (!ctx.hasDataFrom(required)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void markFailed(Diagnostic pending, Exception error) {
+        try {
+            diagnosticRepository.update(identified(pending).status(DiagnosticStatus.FAILED).build());
+        } catch (Exception ex) {
+            log.error(LogMessages.Diagnostic.DIAGNOSTIC_UPDATE_FAILED)
+                .field("diagnosticId", pending.getDiagnosticId())
+                .field("profileId", pending.getProfileId())
+                .field("cause", error.getMessage())
+                .exception(ex)
+                .log();
+        }
+    }
+
+    /** Copies identity fields so a status update does not clear profile, run group, or remarks. */
+    private static Diagnostic.Builder identified(Diagnostic source) {
+        return Diagnostic.builder()
+                .diagnosticId(source.getDiagnosticId())
+                .alertId(source.getAlertId())
+                .profileId(source.getProfileId() != null ? source.getProfileId() : "default")
+                .runGroupId(source.getRunGroupId())
+                .remarks(source.getRemarks())
+                .generatedAt(source.getGeneratedAt());
+    }
+
+    private List<RcaProfile> activeProfiles() {
+        List<RcaProfile> configured = mcpRegistry.profiles();
+        if (configured == null || configured.isEmpty()) {
+            return List.of(IMPLICIT_DEFAULT);
+        }
+        return configured;
+    }
+
+    private record ProfileRun(RcaProfile profile, Diagnostic diagnostic) {}
 
     /**
      * Performs root cause analysis using LLM.
@@ -294,18 +353,22 @@ public class DiagnosticServiceImpl implements DiagnosticService {
      * the structured JSON response into a RootCauseAnalysis object.
      *
      * @param alert the alert to analyze
-     * @param contextString the collected MCP context
+     * @param contextString the collected MCP context, already restricted to the profile
+     * @param profile the RCA profile this run belongs to
+     * @param profileNote servers in scope and servers intentionally excluded
      * @return the RCA result
      */
-    private RootCauseAnalysis performRootCauseAnalysis(Alert alert, String contextString) {
+    private RootCauseAnalysis performRootCauseAnalysis(
+            Alert alert, String contextString, RcaProfile profile, String profileNote) {
         log.debug(LogMessages.Diagnostic.ROOT_CAUSE_ANALYSIS_STARTED)
             .field("alertId", alert.getAlertId())
+            .field("profileId", profile.id())
             .log();
 
         try {
             // Build the prompt using YAML template
             String systemPrompt = rcaPromptBuilder.getSystemPrompt();
-            String userPrompt = rcaPromptBuilder.buildPrompt(alert, contextString);
+            String userPrompt = rcaPromptBuilder.buildPrompt(alert, contextString, profileNote);
 
             log.info(LogMessages.Diagnostic.RCA_PROMPT_BUILT)
                 .field(DiagnosticConstants.FIELD_ALERT_ID, alert.getAlertId())
@@ -443,11 +506,8 @@ public class DiagnosticServiceImpl implements DiagnosticService {
                 }
             }
 
-            Diagnostic completed = Diagnostic.builder()
-                .diagnosticId(pending.getDiagnosticId())
-                .alertId(pending.getAlertId())
+            Diagnostic completed = identified(pending)
                 .status(DiagnosticStatus.COMPLETED)
-                .generatedAt(pending.getGeneratedAt())
                 .confidenceScore(confidenceScore)
                 .faultDomain(faultDomain)
                 .rca(rca)
@@ -708,11 +768,8 @@ public class DiagnosticServiceImpl implements DiagnosticService {
             }
 
             // Layer validation fields on top of the already-persisted base diagnostic
-            Diagnostic updated = Diagnostic.builder()
-                .diagnosticId(base.getDiagnosticId())
-                .alertId(base.getAlertId())
+            Diagnostic updated = identified(base)
                 .status(base.getStatus())
-                .generatedAt(base.getGeneratedAt())
                 .confidenceScore(base.getConfidenceScore())
                 .faultDomain(base.getFaultDomain())
                 .rca(base.getRca())
@@ -848,11 +905,8 @@ public class DiagnosticServiceImpl implements DiagnosticService {
                 .log();
 
             // Return original diagnostic with FAILED status
-            return Diagnostic.builder()
-                .diagnosticId(diagnostic.getDiagnosticId())
-                .alertId(diagnostic.getAlertId())
+            return identified(diagnostic)
                 .status(DiagnosticStatus.FAILED)
-                .generatedAt(diagnostic.getGeneratedAt())
                 .build();
         }
     }

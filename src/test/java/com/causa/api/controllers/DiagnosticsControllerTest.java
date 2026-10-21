@@ -88,7 +88,7 @@ class DiagnosticsControllerTest {
             PageResult<Diagnostic> page = PageResult.of(List.of(), 0L, PageRequest.of(1, 20));
             when(diagnosticService.listDiagnostics(any(), any())).thenReturn(page);
 
-            Response response = controller.listDiagnostics(1, 20, null, null);
+            Response response = controller.listDiagnostics(1, 20, null, null, null);
 
             assertEquals(200, response.getStatus());
             @SuppressWarnings("unchecked")
@@ -110,7 +110,7 @@ class DiagnosticsControllerTest {
             when(alertRepository.findById("alert-1")).thenReturn(Optional.of(a1));
             when(alertRepository.findById("alert-2")).thenReturn(Optional.of(a2));
 
-            Response response = controller.listDiagnostics(1, 20, null, null);
+            Response response = controller.listDiagnostics(1, 20, null, null, null);
 
             assertEquals(200, response.getStatus());
             @SuppressWarnings("unchecked")
@@ -127,7 +127,7 @@ class DiagnosticsControllerTest {
             when(diagnosticService.listDiagnostics(any(), any())).thenReturn(page);
             when(alertRepository.findById("alert-orphan")).thenReturn(Optional.empty());
 
-            Response response = controller.listDiagnostics(1, 20, null, null);
+            Response response = controller.listDiagnostics(1, 20, null, null, null);
 
             assertEquals(200, response.getStatus());
             @SuppressWarnings("unchecked")
@@ -146,7 +146,7 @@ class DiagnosticsControllerTest {
             when(diagnosticService.listDiagnostics(any(), any())).thenReturn(page);
             when(alertRepository.findById(anyString())).thenReturn(Optional.empty());
 
-            controller.listDiagnostics(1, 20, null, null);
+            controller.listDiagnostics(1, 20, null, null, null);
 
             verify(alertRepository).findById("alert-1");
             verify(alertRepository).findById("alert-2");
@@ -159,10 +159,11 @@ class DiagnosticsControllerTest {
             ArgumentCaptor<Diagnostic.Filter> filterCaptor = ArgumentCaptor.forClass(Diagnostic.Filter.class);
             when(diagnosticService.listDiagnostics(filterCaptor.capture(), any())).thenReturn(page);
 
-            controller.listDiagnostics(1, 20, null, "prod");
+            controller.listDiagnostics(1, 20, null, "prod", null);
 
             assertEquals("prod", filterCaptor.getValue().namespace());
             assertNull(filterCaptor.getValue().workload());
+            assertNull(filterCaptor.getValue().profile());
         }
 
         @Test
@@ -172,10 +173,11 @@ class DiagnosticsControllerTest {
             ArgumentCaptor<Diagnostic.Filter> filterCaptor = ArgumentCaptor.forClass(Diagnostic.Filter.class);
             when(diagnosticService.listDiagnostics(filterCaptor.capture(), any())).thenReturn(page);
 
-            controller.listDiagnostics(1, 20, "my-app", null);
+            controller.listDiagnostics(1, 20, "my-app", null, "cryo");
 
             assertEquals("my-app", filterCaptor.getValue().workload());
             assertNull(filterCaptor.getValue().namespace());
+            assertEquals("cryo", filterCaptor.getValue().profile());
         }
     }
 

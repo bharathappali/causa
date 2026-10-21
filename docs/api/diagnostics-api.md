@@ -23,7 +23,10 @@ Returns a summary list of diagnostics.
 
 ```bash
 curl {{BASE_URL}}/api/v1/diagnostics
+curl "{{BASE_URL}}/api/v1/diagnostics?profile=default"
 ```
+
+Optional query parameters: `workload_name`, `namespace`, and `profile`. `profile` is an exact match on the RCA profile id (`default`, `cryo`, …). Omit it to list every profile.
 
 **Using `localhost:8080`:**
 
@@ -38,6 +41,8 @@ curl http://localhost:8080/api/v1/diagnostics
  {
   "id": "diag_iYRpHr6rt8kkXgBu",
   "status": "COMPLETED",
+  "profile_id": "default",
+  "run_group_id": "iYRpHr6rt8kkXgBu",
   "issue": "auth-cache pod in Unknown state with no resource limits and repeated short-lived container cycles",
   "issue_summary": "The auth-cache application pod is in an Unknown state and its containers were started and stopped repeatedly in very short windows, suggesting the workload was being redeployed or reconfigured rapidly without any memory or CPU limits set to protect it.",
   "workload_name": "auth-cache-1",
@@ -51,7 +56,8 @@ curl http://localhost:8080/api/v1/diagnostics
 
 ### Response notes
 
-- `status` is the diagnostic pipeline status.
+- `status` is the diagnostic pipeline status: `PENDING`, `IN_PROGRESS`, `VALIDATING`, `COMPLETED`, `FAILED`, or `SKIPPED`. `SKIPPED` means a required MCP server returned no data and the LLM was not called. The reason is in `remarks` on the detail response.
+- `profile_id` is the RCA profile that produced the diagnostic. `run_group_id` is the shared 16-character suffix for every diagnostic created from the same alert.
 - `issue` and `issue_summary` can be `null` when generation failed or has not produced RCA content yet.
 - `cluster_name` is populated from runtime configuration and currently returns `default` locally.
 
@@ -81,6 +87,8 @@ curl http://localhost:8080/api/v1/diagnostics/diag_6YuCDWBMfwzWoMhY
 {
   "id": "diag_iYRpHr6rt8kkXgBu",
   "status": "COMPLETED",
+  "profile_id": "default",
+  "run_group_id": "iYRpHr6rt8kkXgBu",
   "alert_id": "alrt_waWEGwPtpXPpeEvr",
   "alert_name": "chaos-lab-high-memory",
   "severity": "critical",

@@ -6,6 +6,12 @@ import com.causa.core.domain.Alert;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+
 /**
  * RCA Prompt Builder
  *
@@ -37,9 +43,10 @@ public class RcaPromptBuilder {
      *
      * @param alert the alert to analyze (unused, kept for API compatibility)
      * @param mcpContext the collected MCP context as a string (includes all signal data)
+     * @param profileNote which MCP servers are in scope and which were intentionally excluded
      * @return the complete RCA prompt
      */
-    public String buildPrompt(Alert alert, String mcpContext) {
+    public String buildPrompt(Alert alert, String mcpContext, String profileNote) {
         String provider  = llmConfigCache.getActive()
             .map(a -> a.getProvider().name().toLowerCase()).orElse("");
         String modelName = llmConfigCache.getActive()
@@ -49,7 +56,31 @@ public class RcaPromptBuilder {
         ModelType modelType = determineModelType(provider, modelName);
         PromptTemplateLoader.PromptTemplate template =
             templateLoader.loadTemplate(modelType.getTemplateName(), modelName);
-        return template.render(mcpContext);
+        return template.render(mcpContext, profileNote);
+    }
+
+    /**
+     * Names the profile's servers and any configured servers left out of it.
+     * An empty exclusion list omits the excluded sentence so in-scope gaps stay reportable.
+     */
+    public static String profileNote(Set<String> inScope, Collection<String> allServers) {
+        List<String> scope = new ArrayList<>(inScope);
+        Collections.sort(scope);
+        List<String> excluded = new ArrayList<>();
+        for (String server : allServers) {
+            if (!inScope.contains(server)) {
+                excluded.add(server);
+            }
+        }
+        Collections.sort(excluded);
+        StringBuilder note = new StringBuilder("Data sources in scope for this analysis: ");
+        note.append(scope.isEmpty() ? "none" : String.join(", ", scope)).append('.');
+        if (!excluded.isEmpty()) {
+            note.append(" Intentionally excluded: ")
+                    .append(String.join(", ", excluded))
+                    .append(". Do not report excluded sources as missing data.");
+        }
+        return note.toString();
     }
 
     /**
